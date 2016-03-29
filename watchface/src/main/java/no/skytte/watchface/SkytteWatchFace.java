@@ -9,7 +9,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.graphics.Rect;
-import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
@@ -22,24 +22,26 @@ import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.widget.ImageView;
 import android.widget.TextView;
+
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.wearable.DataApi;
+import com.google.android.gms.wearable.DataEvent;
+import com.google.android.gms.wearable.DataEventBuffer;
+import com.google.android.gms.wearable.DataItem;
+import com.google.android.gms.wearable.DataMap;
+import com.google.android.gms.wearable.DataMapItem;
+import com.google.android.gms.wearable.Wearable;
 
 import java.lang.ref.WeakReference;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Digital watch face with seconds. In ambient mode, the seconds aren't displayed. On devices with
- * low-bit ambient mode, the text is drawn without anti-aliasing in ambient mode.
- */
+
 public class SkytteWatchFace extends CanvasWatchFaceService {
-    private static final Typeface NORMAL_TYPEFACE =
-            Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
-
-
     /**
-     * Update rate in milliseconds for interactive mode. We update once a second since seconds are
-     * displayed in interactive mode.
+     * Update rate in milliseconds for interactive mode.
      */
     private static final long INTERACTIVE_UPDATE_RATE_MS = TimeUnit.SECONDS.toMillis(1);
 
@@ -76,9 +78,12 @@ public class SkytteWatchFace extends CanvasWatchFaceService {
     private class Engine extends CanvasWatchFaceService.Engine {
 
         private int specW, specH;
-        private View myLayout;
-        private TextView day, date, month, hour, minute, second;
+        private View myLayout, weatherLayout;
+        private TextView time, tempHigh, tempLow;
+        private ImageView icon;
         private final Point displaySize = new Point();
+        private int mBgColor;
+        GoogleApiClient mGoogleApiClient;
 
 
         final Handler mUpdateTimeHandler = new EngineHandler(this);
@@ -130,12 +135,40 @@ public class SkytteWatchFace extends CanvasWatchFaceService {
             specH = View.MeasureSpec.makeMeasureSpec(displaySize.y,
                     View.MeasureSpec.EXACTLY);
 
-            day = (TextView) myLayout.findViewById(R.id.day);
-            date = (TextView) myLayout.findViewById(R.id.date);
-            month = (TextView) myLayout.findViewById(R.id.month);
-            hour = (TextView) myLayout.findViewById(R.id.hour);
-            minute = (TextView) myLayout.findViewById(R.id.minute);
-            second = (TextView) myLayout.findViewById(R.id.second);
+            time = (TextView) myLayout.findViewById(R.id.time);
+            weatherLayout = myLayout.findViewById(R.id.weather_layout);
+            tempHigh = (TextView) myLayout.findViewById(R.id.temp_high);
+            tempLow = (TextView) myLayout.findViewById(R.id.temp_low);
+            icon = (ImageView) myLayout.findViewById(R.id.weather_img);
+
+            mBgColor = getColor(R.color.background);
+
+            mGoogleApiClient = new GoogleApiClient.Builder(SkytteWatchFace.this)
+                    .addApi(Wearable.API)
+                    .build();
+            mGoogleApiClient.connect();
+            Wearable.DataApi.addListener(mGoogleApiClient, new DataApi.DataListener() {
+                @Override
+                public void onDataChanged(DataEventBuffer dataEvents) {
+                    // Loop through the events and send a message back to the node that created the data item.
+                    for (DataEvent event : dataEvents) {
+                        DataItem item = event.getDataItem();
+                        Uri uri = item.getUri();
+                        String path = uri.getPath();
+                        if ("/weather".equals(path)) {
+                            DataMap dataMap = DataMapItem.fromDataItem(item).getDataMap();
+                            double h = dataMap.getDouble("max");
+                            double l = dataMap.getDouble("min");
+                            int id = dataMap.getInt("weather_id");
+
+                            Utility.formatTemperature(h);
+                            tempHigh.setText(Utility.formatTemperature(h));
+                            tempLow.setText(Utility.formatTemperature(l));
+                            icon.setImageResource(Utility.getArtResourceForWeatherCondition(id));
+                        }
+                    }
+                }
+            });
         }
 
         @Override
@@ -184,13 +217,18 @@ public class SkytteWatchFace extends CanvasWatchFaceService {
         public void onApplyWindowInsets(WindowInsets insets) {
             super.onApplyWindowInsets(insets);
 
-            // Load resources that have alternate values for round watches.
-            Resources resources = SkytteWatchFace.this.getResources();
-            boolean isRound = insets.isRound();
-            mXOffset = resources.getDimension(isRound
-                    ? R.dimen.digital_x_offset_round : R.dimen.digital_x_offset);
-            float textSize = resources.getDimension(isRound
-                    ? R.dimen.digital_text_size_round : R.dimen.digital_text_size);
+            if (insets.isRound()) {
+                mXOffset = mYOffset = displaySize.x * 0.1f;
+                displaySize.x -= 2 * mXOffset;
+                displaySize.y -= 2 * mYOffset;
+
+                specW = View.MeasureSpec.makeMeasureSpec(displaySize.x,
+                        View.MeasureSpec.EXACTLY);
+                specH = View.MeasureSpec.makeMeasureSpec(displaySize.y,
+                        View.MeasureSpec.EXACTLY);
+            } else {
+                mXOffset = mYOffset = 0;
+            }
         }
 
         @Override
@@ -222,21 +260,20 @@ public class SkytteWatchFace extends CanvasWatchFaceService {
         @Override
         public void onDraw(Canvas canvas, Rect bounds) {
             mTime.setToNow();
-            day.setText(String.format("%ta", mTime.toMillis(false)));
-            date.setText(String.format("%02d", mTime.monthDay));
-            month.setText(String.format("%ta", mTime.toMillis(false)));
+            time.setText(String.format("%02d", mTime.hour) + ":" + String.format("%02d", mTime.minute));
 
-            hour.setText(String.format("%02d", mTime.hour));
-            minute.setText(String.format("%02d", mTime.minute));
-            if (!mAmbient) {
-                second.setText(String.format("%02d", mTime.second));
+            if (mAmbient) {
+                weatherLayout.setVisibility(View.GONE);
+            } else {
+                weatherLayout.setVisibility(View.VISIBLE);
             }
 
             myLayout.measure(specW, specH);
             myLayout.layout(0, 0, myLayout.getMeasuredWidth(),
                     myLayout.getMeasuredHeight());
 
-            canvas.drawColor(Color.BLACK);
+            canvas.drawColor(mAmbient ? Color.BLACK : mBgColor);
+            canvas.translate(mXOffset, mYOffset);
             myLayout.draw(canvas);
 
             // Draw the background.
